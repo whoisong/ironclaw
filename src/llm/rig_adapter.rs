@@ -37,6 +37,7 @@ pub struct RigAdapter<M: CompletionModel> {
     model_name: String,
     input_cost: Decimal,
     output_cost: Decimal,
+    include_temperature: bool,
     /// Prompt cache retention policy (Anthropic only).
     /// When not `CacheRetention::None`, injects top-level `cache_control`
     /// via `additional_params` for Anthropic automatic caching. Also controls
@@ -55,8 +56,15 @@ impl<M: CompletionModel> RigAdapter<M> {
             model_name: name,
             input_cost,
             output_cost,
+            include_temperature: true,
             cache_retention: CacheRetention::None,
         }
+    }
+
+    /// Control whether outgoing requests should include temperature.
+    pub fn with_temperature_enabled(mut self, enabled: bool) -> Self {
+        self.include_temperature = enabled;
+        self
     }
 
     /// Set Anthropic prompt cache retention policy.
@@ -553,13 +561,14 @@ where
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
         let (preamble, history) = convert_messages(&messages);
+        let temperature = self.include_temperature.then_some(request.temperature).flatten();
 
         let rig_req = build_rig_request(
             preamble,
             history,
             Vec::new(),
             None,
-            request.temperature,
+            temperature,
             request.max_tokens,
             self.cache_retention,
         )?;
@@ -619,13 +628,14 @@ where
         let (preamble, history) = convert_messages(&messages);
         let tools = convert_tools(&request.tools);
         let tool_choice = convert_tool_choice(request.tool_choice.as_deref());
+        let temperature = self.include_temperature.then_some(request.temperature).flatten();
 
         let rig_req = build_rig_request(
             preamble,
             history,
             tools,
             tool_choice,
-            request.temperature,
+            temperature,
             request.max_tokens,
             self.cache_retention,
         )?;

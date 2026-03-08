@@ -120,7 +120,19 @@ fn create_registry_provider(
 fn create_openai_compat_from_registry(
     config: &RegistryProviderConfig,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    use crate::config::helpers::parse_bool_env;
     use rig::providers::openai;
+
+    let include_temperature = match parse_bool_env("LLM_WITH_TEMP", true) {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "Invalid LLM_WITH_TEMP value, defaulting to include temperature"
+            );
+            true
+        }
+    };
 
     let mut extra_headers = reqwest::header::HeaderMap::new();
     for (key, value) in &config.extra_headers {
@@ -178,10 +190,13 @@ fn create_openai_compat_from_registry(
         provider = %config.provider_id,
         model = %config.model,
         base_url = %config.base_url,
+        include_temperature,
         "Using OpenAI-compatible provider"
     );
 
-    Ok(Arc::new(RigAdapter::new(model, &config.model)))
+    Ok(Arc::new(
+        RigAdapter::new(model, &config.model).with_temperature_enabled(include_temperature),
+    ))
 }
 
 fn create_anthropic_from_registry(
