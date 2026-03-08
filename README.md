@@ -25,6 +25,10 @@
 
 ---
 
+## Albert's edition
+
+This is a modified repo with customized features for personal use.
+
 ## Philosophy
 
 IronClaw is built on a simple principle: **your AI assistant should work for you, not against you**.
