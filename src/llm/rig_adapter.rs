@@ -561,7 +561,11 @@ where
         let mut messages = request.messages;
         crate::llm::provider::sanitize_tool_messages(&mut messages);
         let (preamble, history) = convert_messages(&messages);
-        let temperature = self.include_temperature.then_some(request.temperature).flatten();
+        let temperature = if self.include_temperature {
+            request.temperature
+        } else {
+            None
+        };
 
         let rig_req = build_rig_request(
             preamble,
