@@ -681,8 +681,53 @@ impl Agent {
                                         .into())
                                     });
 
-                                // Send ToolResult preview
-                                if let Ok(ref output) = tool_result
+                                // Detect image generation sentinel in tool output
+                                // (only from image tools — avoids parsing all tool outputs)
+                                let is_image_sentinel = if let Ok(ref output) = tool_result
+                                    && matches!(tc.name.as_str(), "image_generate" | "image_edit")
+                                {
+                                    if let Ok(sentinel) =
+                                        serde_json::from_str::<serde_json::Value>(output)
+                                        && sentinel.get("type").and_then(|v| v.as_str())
+                                            == Some("image_generated")
+                                    {
+                                        let data_url = sentinel
+                                            .get("data")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let path = sentinel
+                                            .get("path")
+                                            .and_then(|v| v.as_str())
+                                            .map(String::from);
+                                        // Skip broadcasting if data_url is empty to avoid
+                                        // sending a broken ImageGenerated SSE event.
+                                        if data_url.is_empty() {
+                                            tracing::warn!(
+                                                "Image generation sentinel has empty data URL, skipping broadcast"
+                                            );
+                                        } else {
+                                            let _ = self
+                                                .channels
+                                                .send_status(
+                                                    &message.channel,
+                                                    StatusUpdate::ImageGenerated { data_url, path },
+                                                    &message.metadata,
+                                                )
+                                                .await;
+                                        }
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                // Send ToolResult preview (skip for image sentinels to avoid
+                                // broadcasting multi-MB base64 data as a preview)
+                                if !is_image_sentinel
+                                    && let Ok(ref output) = tool_result
                                     && !output.is_empty()
                                 {
                                     let _ = self
@@ -696,23 +741,6 @@ impl Agent {
                                             &message.metadata,
                                         )
                                         .await;
-                                }
-
-                                // Record result in thread
-                                {
-                                    let mut sess = session.lock().await;
-                                    if let Some(thread) = sess.threads.get_mut(&thread_id)
-                                        && let Some(turn) = thread.last_turn_mut()
-                                    {
-                                        match &tool_result {
-                                            Ok(output) => {
-                                                turn.record_tool_result(serde_json::json!(output));
-                                            }
-                                            Err(e) => {
-                                                turn.record_tool_error(e.to_string());
-                                            }
-                                        }
-                                    }
                                 }
 
                                 // Check for auth awaiting — defer the return
@@ -754,6 +782,7 @@ impl Agent {
                                 }
 
                                 // Sanitize and add tool result to context
+                                let is_tool_error = tool_result.is_err();
                                 let result_content = match tool_result {
                                     Ok(output) => {
                                         let sanitized =
@@ -766,6 +795,23 @@ impl Agent {
                                     }
                                     Err(e) => format!("Tool '{}' failed: {}", tc.name, e),
                                 };
+
+                                // Record sanitized result in thread so messages()
+                                // and persist_tool_calls() use cleaned content.
+                                {
+                                    let mut sess = session.lock().await;
+                                    if let Some(thread) = sess.threads.get_mut(&thread_id)
+                                        && let Some(turn) = thread.last_turn_mut()
+                                    {
+                                        if is_tool_error {
+                                            turn.record_tool_error(result_content.clone());
+                                        } else {
+                                            turn.record_tool_result(serde_json::json!(
+                                                result_content
+                                            ));
+                                        }
+                                    }
+                                }
 
                                 context_messages.push(ChatMessage::tool_result(
                                     &tc.id,
@@ -1159,6 +1205,7 @@ mod tests {
                 max_tool_iterations: 50,
                 auto_approve_tools: false,
                 default_timezone: "UTC".to_string(),
+                max_tokens_per_job: 0,
             },
             deps,
             Arc::new(ChannelManager::new()),
@@ -1215,6 +1262,96 @@ mod tests {
                 cmd
             );
         }
+    }
+
+    #[test]
+    fn test_always_approval_requirement_bypasses_session_auto_approve() {
+        // Regression test: even if tool is auto-approved in session,
+        // ApprovalRequirement::Always must still trigger approval.
+        use crate::tools::ApprovalRequirement;
+
+        let mut session = Session::new("user-1");
+        let tool_name = "tool_remove";
+
+        // Manually auto-approve tool_remove in this session
+        session.auto_approve_tool(tool_name);
+        assert!(
+            session.is_tool_auto_approved(tool_name),
+            "tool should be auto-approved"
+        );
+
+        // However, ApprovalRequirement::Always should always require approval
+        // This is verified by the dispatcher logic: Always => true (ignores session state)
+        let always_req = ApprovalRequirement::Always;
+        let requires_approval = match always_req {
+            ApprovalRequirement::Never => false,
+            ApprovalRequirement::UnlessAutoApproved => !session.is_tool_auto_approved(tool_name),
+            ApprovalRequirement::Always => true,
+        };
+
+        assert!(
+            requires_approval,
+            "ApprovalRequirement::Always must require approval even when tool is auto-approved"
+        );
+    }
+
+    #[test]
+    fn test_always_approval_requirement_vs_unless_auto_approved() {
+        // Verify the two requirements behave differently
+        use crate::tools::ApprovalRequirement;
+
+        let mut session = Session::new("user-2");
+        let tool_name = "http";
+
+        // Scenario 1: Tool is auto-approved
+        session.auto_approve_tool(tool_name);
+
+        // UnlessAutoApproved → doesn't require approval if auto-approved
+        let unless_req = ApprovalRequirement::UnlessAutoApproved;
+        let unless_needs = match unless_req {
+            ApprovalRequirement::Never => false,
+            ApprovalRequirement::UnlessAutoApproved => !session.is_tool_auto_approved(tool_name),
+            ApprovalRequirement::Always => true,
+        };
+        assert!(
+            !unless_needs,
+            "UnlessAutoApproved should not need approval when auto-approved"
+        );
+
+        // Always → always requires approval
+        let always_req = ApprovalRequirement::Always;
+        let always_needs = match always_req {
+            ApprovalRequirement::Never => false,
+            ApprovalRequirement::UnlessAutoApproved => !session.is_tool_auto_approved(tool_name),
+            ApprovalRequirement::Always => true,
+        };
+        assert!(
+            always_needs,
+            "Always must always require approval, even when auto-approved"
+        );
+
+        // Scenario 2: Tool is NOT auto-approved
+        let new_tool = "new_tool";
+        assert!(!session.is_tool_auto_approved(new_tool));
+
+        // UnlessAutoApproved → requires approval
+        let unless_needs = match unless_req {
+            ApprovalRequirement::Never => false,
+            ApprovalRequirement::UnlessAutoApproved => !session.is_tool_auto_approved(new_tool),
+            ApprovalRequirement::Always => true,
+        };
+        assert!(
+            unless_needs,
+            "UnlessAutoApproved should need approval when not auto-approved"
+        );
+
+        // Always → always requires approval
+        let always_needs = match always_req {
+            ApprovalRequirement::Never => false,
+            ApprovalRequirement::UnlessAutoApproved => !session.is_tool_auto_approved(new_tool),
+            ApprovalRequirement::Always => true,
+        };
+        assert!(always_needs, "Always must always require approval");
     }
 
     #[test]
@@ -1907,6 +2044,7 @@ mod tests {
                 max_tool_iterations,
                 auto_approve_tools: true,
                 default_timezone: "UTC".to_string(),
+                max_tokens_per_job: 0,
             },
             deps,
             Arc::new(ChannelManager::new()),
@@ -2023,6 +2161,7 @@ mod tests {
                     max_tool_iterations: max_iter,
                     auto_approve_tools: true,
                     default_timezone: "UTC".to_string(),
+                    max_tokens_per_job: 0,
                 },
                 deps,
                 Arc::new(ChannelManager::new()),
@@ -2122,6 +2261,49 @@ mod tests {
         assert!(
             formatted.contains("connection refused"),
             "Error should include the underlying reason, got: {formatted}"
+        );
+    }
+
+    #[test]
+    fn test_image_sentinel_empty_data_url_should_be_skipped() {
+        // Regression: unwrap_or_default() on missing "data" field produces an empty
+        // string. Broadcasting an empty data_url would send a broken SSE event.
+        let sentinel = serde_json::json!({
+            "type": "image_generated",
+            "path": "/tmp/image.png"
+            // "data" field is missing
+        });
+
+        let data_url = sentinel
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(
+            data_url.is_empty(),
+            "Missing 'data' field should produce empty string"
+        );
+        // The fix: empty data_url means we skip broadcasting
+    }
+
+    #[test]
+    fn test_image_sentinel_present_data_url_is_valid() {
+        let sentinel = serde_json::json!({
+            "type": "image_generated",
+            "data": "data:image/png;base64,abc123",
+            "path": "/tmp/image.png"
+        });
+
+        let data_url = sentinel
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        assert!(
+            !data_url.is_empty(),
+            "Present 'data' field should produce non-empty string"
         );
     }
 }

@@ -23,4 +23,8 @@ bench-results/
 # WASM build artifacts (loaded from disk, not bundled)
 *.wasm
 
+# Traces
 trace_*.json
+
+# Local Claude Code settings (machine-specific, should not be committed)
+.claude/settings.local.json

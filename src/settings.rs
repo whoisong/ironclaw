@@ -47,7 +47,7 @@ pub struct Settings {
     pub secrets_master_key_hex: Option<String>,
 
     // === Step 3: Inference Provider ===
-    /// LLM backend: "nearai", "anthropic", "openai", "ollama", "openai_compatible".
+    /// LLM backend: "nearai", "anthropic", "openai", "ollama", "openai_compatible", "tinfoil", "bedrock".
     #[serde(default)]
     pub llm_backend: Option<String>,
 
@@ -58,6 +58,18 @@ pub struct Settings {
     /// OpenAI-compatible endpoint base URL (when llm_backend = "openai_compatible").
     #[serde(default)]
     pub openai_compatible_base_url: Option<String>,
+
+    /// Bedrock region (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_region: Option<String>,
+
+    /// Bedrock cross-region inference prefix (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_cross_region: Option<String>,
+
+    /// AWS profile name for Bedrock (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_profile: Option<String>,
 
     // === Step 4: Model Selection ===
     /// Currently selected model.
@@ -374,6 +386,10 @@ pub struct AgentSettings {
     /// Default timezone for new sessions (IANA name, e.g. "America/New_York").
     #[serde(default = "default_timezone")]
     pub default_timezone: String,
+
+    /// Maximum tokens per job (0 = unlimited).
+    #[serde(default)]
+    pub max_tokens_per_job: u64,
 }
 
 fn default_agent_name() -> String {
@@ -430,6 +446,7 @@ impl Default for AgentSettings {
             max_tool_iterations: default_max_tool_iterations(),
             auto_approve_tools: false,
             default_timezone: default_timezone(),
+            max_tokens_per_job: 0,
         }
     }
 }

@@ -71,6 +71,9 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "message",
     "web_fetch",
     "restart",
+    "image_generate",
+    "image_edit",
+    "image_analyze",
 ];
 
 /// Registry of available tools.
@@ -238,7 +241,7 @@ impl ToolRegistry {
         }
         self.register_sync(Arc::new(http));
 
-        tracing::info!("Registered {} built-in tools", self.count());
+        tracing::debug!("Registered {} built-in tools", self.count());
     }
 
     /// Register only orchestrator-domain tools (safe for the main process).
@@ -286,7 +289,7 @@ impl ToolRegistry {
         self.register_sync(Arc::new(ListDirTool::new()));
         self.register_sync(Arc::new(ApplyPatchTool::new()));
 
-        tracing::info!("Registered 5 development tools");
+        tracing::debug!("Registered 5 development tools");
     }
 
     /// Register memory tools with a workspace.
@@ -299,7 +302,7 @@ impl ToolRegistry {
         self.register_sync(Arc::new(MemoryReadTool::new(Arc::clone(&workspace))));
         self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
 
-        tracing::info!("Registered 4 memory tools");
+        tracing::debug!("Registered 4 memory tools");
     }
 
     /// Register job management tools.
@@ -361,7 +364,7 @@ impl ToolRegistry {
             job_tool_count += 1;
         }
 
-        tracing::info!("Registered {} job management tools", job_tool_count);
+        tracing::debug!("Registered {} job management tools", job_tool_count);
     }
 
     /// Register secret management tools (list, delete).
@@ -375,7 +378,7 @@ impl ToolRegistry {
         use crate::tools::builtin::{SecretDeleteTool, SecretListTool};
         self.register_sync(Arc::new(SecretListTool::new(Arc::clone(&store))));
         self.register_sync(Arc::new(SecretDeleteTool::new(store)));
-        tracing::info!("Registered 2 secret management tools (list, delete)");
+        tracing::debug!("Registered 2 secret management tools (list, delete)");
     }
 
     /// Register extension management tools (search, install, auth, activate, list, remove).
@@ -390,7 +393,7 @@ impl ToolRegistry {
         self.register_sync(Arc::new(ToolRemoveTool::new(Arc::clone(&manager))));
         self.register_sync(Arc::new(ToolUpgradeTool::new(Arc::clone(&manager))));
         self.register_sync(Arc::new(ExtensionInfoTool::new(manager)));
-        tracing::info!("Registered 8 extension management tools");
+        tracing::debug!("Registered 8 extension management tools");
     }
 
     /// Register skill management tools (list, search, install, remove).
@@ -411,7 +414,7 @@ impl ToolRegistry {
             Arc::clone(&catalog),
         )));
         self.register_sync(Arc::new(SkillRemoveTool::new(registry)));
-        tracing::info!("Registered 4 skill management tools");
+        tracing::debug!("Registered 4 skill management tools");
     }
 
     /// Register routine management tools.
@@ -445,7 +448,7 @@ impl ToolRegistry {
             Arc::clone(&engine),
         )));
         self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
-        tracing::info!("Registered 6 routine management tools");
+        tracing::debug!("Registered 6 routine management tools");
     }
 
     /// Register message tool for sending messages to channels.
@@ -464,7 +467,7 @@ impl ToolRegistry {
             .write()
             .await
             .insert("message".to_string());
-        tracing::info!("Registered message tool");
+        tracing::debug!("Registered message tool");
     }
 
     /// Set the default channel and target for the message tool.
@@ -473,6 +476,52 @@ impl ToolRegistry {
         if let Some(tool) = self.message_tool.read().await.as_ref() {
             tool.set_context(channel, target).await;
         }
+    }
+
+    /// Register image generation and editing tools.
+    ///
+    /// These tools allow the LLM to generate and edit images using cloud APIs.
+    /// Requires an API base URL, API key, and model name for the image generation backend.
+    pub fn register_image_tools(
+        &self,
+        api_base_url: String,
+        api_key: String,
+        gen_model: String,
+        base_dir: Option<std::path::PathBuf>,
+    ) {
+        use crate::tools::builtin::{ImageEditTool, ImageGenerateTool};
+        self.register_sync(Arc::new(ImageGenerateTool::new(
+            api_base_url.clone(),
+            api_key.clone(),
+            gen_model.clone(),
+        )));
+        self.register_sync(Arc::new(ImageEditTool::new(
+            api_base_url,
+            api_key,
+            gen_model,
+            base_dir,
+        )));
+        tracing::debug!("Registered 2 image tools (generate, edit)");
+    }
+
+    /// Register vision/image analysis tools.
+    ///
+    /// These tools allow the LLM to analyze images using a vision-capable model.
+    pub fn register_vision_tools(
+        &self,
+        api_base_url: String,
+        api_key: String,
+        vision_model: String,
+        base_dir: Option<std::path::PathBuf>,
+    ) {
+        use crate::tools::builtin::ImageAnalyzeTool;
+        self.register_sync(Arc::new(ImageAnalyzeTool::new(
+            api_base_url,
+            api_key,
+            vision_model,
+            base_dir,
+        )));
+        tracing::debug!("Registered 1 vision tool (analyze)");
     }
 
     /// Register the software builder tool.
@@ -500,7 +549,7 @@ impl ToolRegistry {
         self.register(Arc::new(BuildSoftwareTool::new(builder)))
             .await;
 
-        tracing::info!("Registered software builder tool");
+        tracing::debug!("Registered software builder tool");
     }
 
     /// Register a WASM tool from bytes.
@@ -570,7 +619,7 @@ impl ToolRegistry {
             );
         }
 
-        tracing::info!(name = reg.name, "Registered WASM tool");
+        tracing::debug!(name = reg.name, "Registered WASM tool");
         Ok(())
     }
 
@@ -627,7 +676,7 @@ impl ToolRegistry {
         .await
         .map_err(WasmRegistrationError::Wasm)?;
 
-        tracing::info!(
+        tracing::debug!(
             name = tool_with_binary.tool.name,
             user_id = user_id,
             trust_level = %tool_with_binary.tool.trust_level,
